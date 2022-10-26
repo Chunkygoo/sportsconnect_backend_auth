@@ -20,8 +20,6 @@ from supertokens_python.recipe import (
 )
 from supertokens_python.recipe.emailpassword.interfaces import (
     APIInterface,
-    APIOptions,
-    SignUpPostOkResult,
 )
 from supertokens_python.recipe.emailpassword.types import FormField
 
@@ -39,40 +37,6 @@ from supertokens_python.recipe.thirdpartyemailpassword.interfaces import (
 from typing import Union
 from supertokens_python.recipe.thirdparty.provider import Provider
 from supertokens_python.recipe.emailpassword.types import FormField
-
-
-def override_email_password_apis(original_implementation: APIInterface):
-    original_sign_up_post = original_implementation.sign_up_post
-
-    async def sign_up_post(
-        form_fields: List[FormField],
-        api_options: APIOptions,
-        user_context: Dict[str, Any],
-    ):
-        # First we call the original implementation of signInPOST.
-        response = await original_sign_up_post(form_fields, api_options, user_context)
-
-        # Post sign up response, we check if it was successful
-        if isinstance(response, SignUpPostOkResult):
-            user_id = response.user.user_id
-            email = response.user.email
-            try:
-                res = requests.post(
-                    settings.api_data_url + "/auth/postsignup",
-                    json={"id": user_id, "email": email},
-                )
-                if res.status_code != 201:  # API error
-                    await delete_user(user_id)
-                    return None
-            except:  # Network error
-                await delete_user(user_id)
-                raise ValueError(
-                    "An error occurred while posting the request to api_data_url"
-                )
-        return response
-
-    original_implementation.sign_up_post = sign_up_post
-    return original_implementation
 
 
 def override_thirdpartyemailpassword_apis(original_implementation: APIInterface):
@@ -116,10 +80,10 @@ def override_thirdpartyemailpassword_apis(original_implementation: APIInterface)
                         json={"id": user_id, "email": email},
                     )
                     if res.status_code != 201:  # API error
-                        await delete_user(user_id)
+                        delete_user(user_id)
                         return None
                 except:  # Network error
-                    await delete_user(user_id)
+                    delete_user(user_id)
                     raise ValueError(
                         "An error occurred while posting the request to api_data_url"
                     )
@@ -162,10 +126,10 @@ def override_thirdpartyemailpassword_apis(original_implementation: APIInterface)
                     json={"id": user_id, "email": email},
                 )
                 if res.status_code != 201:  # API error
-                    await delete_user(user_id)
+                    delete_user(user_id)
                     return None
             except:  # Network error
-                await delete_user(user_id)
+                delete_user(user_id)
                 raise ValueError(
                     "An error occurred while posting the request to api_data_url"
                 )
@@ -181,9 +145,37 @@ if settings.environment == "PROD":
     app = FastAPI(openapi_url=None, redoc_url=None)
     nest_asyncio.apply()  # lambda supertokens_python fix
     mode = "wsgi"
+    recipe_list = [
+        session.init(
+            cookie_secure=settings.cookie_secure,
+            cookie_same_site=settings.cookie_same_site,
+        ),
+    ]
 else:
     app = FastAPI()
     mode = "asgi"
+    recipe_list = [
+        session.init(
+            cookie_secure=settings.cookie_secure,
+            cookie_domain=settings.cookie_domain,
+            cookie_same_site=settings.cookie_same_site,
+        ),
+    ]
+
+recipe_list += [
+    emailverification.init(mode=settings.email_verification),
+    thirdpartyemailpassword.init(
+        override=thirdpartyemailpassword.InputOverrideConfig(
+            apis=override_thirdpartyemailpassword_apis
+        ),
+        providers=[
+            Google(
+                client_id=settings.google_client_id,
+                client_secret=settings.google_client_secret,
+            ),
+        ],
+    ),
+]
 
 init(
     app_info=InputAppInfo(
@@ -199,32 +191,14 @@ init(
         api_key=settings.api_key,
     ),
     framework="fastapi",
-    recipe_list=[
-        session.init(
-            cookie_secure=settings.cookie_secure,
-            cookie_domain=settings.cookie_domain,
-            cookie_same_site=settings.cookie_same_site,
-        ),
-        emailverification.init(mode=settings.email_verification),
-        thirdpartyemailpassword.init(
-            override=thirdpartyemailpassword.InputOverrideConfig(
-                apis=override_thirdpartyemailpassword_apis
-            ),
-            providers=[
-                Google(
-                    client_id=settings.google_client_id,
-                    client_secret=settings.google_client_secret,
-                ),
-            ],
-        ),
-    ],
+    recipe_list=recipe_list,
     mode=mode,
 )
 
 app.add_middleware(get_middleware())
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.origin_0],
+    allow_origins=[settings.origin_0, "*"],
     allow_credentials=True,
     allow_methods=["GET", "PUT", "POST", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["Content-Type"]
